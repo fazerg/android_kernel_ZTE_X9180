@@ -197,6 +197,45 @@ end:
 
 static int lcd_backlight_registered;
 
+#ifdef CONFIG_ZTEMT_LCD_BACKLIGHT_LINEAR_CONTROL_METHOLD
+static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
+				      enum led_brightness value)
+{
+	struct msm_fb_data_type *mfd = dev_get_drvdata(led_cdev->dev->parent);
+	int bl_lvl = 0;
+
+    mfd->panel_info->bl_level = value;
+
+    if (value>0)
+    {
+    	if (value > mfd->panel_info->brightness_max)
+    		value = mfd->panel_info->brightness_max;
+
+        if (value < mfd->panel_info->brig_to_bl_lvl_turn_point)
+        {
+            bl_lvl = (mfd->panel_info->brig_to_bl_lvl_para_a1) * value + mfd->panel_info->brig_to_bl_lvl_para_b1;
+        }
+        else
+        {
+            bl_lvl = (mfd->panel_info->brig_to_bl_lvl_para_a2) * value + mfd->panel_info->brig_to_bl_lvl_para_b2;
+        }
+
+        bl_lvl = bl_lvl>0 ? bl_lvl/100 : 0;
+        bl_lvl = bl_lvl>mfd->panel_info->bl_max ? mfd->panel_info->bl_max : bl_lvl;
+    }
+
+	if (!bl_lvl && value)
+		bl_lvl = 1;
+
+	if (!IS_CALIB_MODE_BL(mfd) && (!mfd->ext_bl_ctrl || !value ||
+							!mfd->bl_level)) {
+		mutex_lock(&mfd->bl_lock);
+		mdss_fb_set_backlight(mfd, bl_lvl);
+		mutex_unlock(&mfd->bl_lock);
+	}
+}
+
+#else
 static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 				      enum led_brightness value)
 {
@@ -221,6 +260,7 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 		mutex_unlock(&mfd->bl_lock);
 	}
 }
+#endif
 
 static struct led_classdev backlight_led = {
 	.name           = "lcd-backlight",
@@ -832,6 +872,9 @@ void mdss_fb_update_backlight(struct msm_fb_data_type *mfd)
 	}
 }
 
+#ifdef CONFIG_ZTEMT_NX404H_LCD
+extern int mipi_lcd_on_post(void);
+#endif
 static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 			     int op_enable)
 {
@@ -848,6 +891,9 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	case FB_BLANK_UNBLANK:
 		if (!mfd->panel_power_on && mfd->mdp.on_fnc) {
 			ret = mfd->mdp.on_fnc(mfd);
+#ifdef CONFIG_ZTEMT_NX404H_LCD
+			mipi_lcd_on_post();
+#endif
 			if (ret == 0) {
 				mfd->panel_power_on = true;
 				mfd->panel_info->panel_dead = false;

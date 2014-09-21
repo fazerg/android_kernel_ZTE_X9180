@@ -95,6 +95,21 @@
 
 #define QPNP_BMS_DEV_NAME "qcom,qpnp-bms"
 
+#ifdef CONFIG_ZTEMT_CHARGE
+//#undef pr_debug
+//#define pr_debug   pr_info
+
+#undef KERN_INFO
+#define KERN_INFO KERN_ERR
+#endif
+
+#ifdef CONFIG_ZTEMT_CHARGE
+static int debug_mask_bms = 0;
+module_param_named(debug_mask_bms, debug_mask_bms, int, S_IRUGO | S_IWUSR | S_IWGRP);
+#define DBG_BMS(x...) do {if (debug_mask_bms) pr_info(">>ZTEMT_BMS>>  " x); } while (0)
+#endif
+
+
 enum {
 	SHDW_CC,
 	CC
@@ -1134,9 +1149,15 @@ static int read_soc_params_raw(struct qpnp_bms_chip *chip,
 	if (chip->ocv_reading_at_100 != raw->last_good_ocv_raw)
 		chip->ocv_reading_at_100 = OCV_RAW_UNINITIALIZED;
 
+ #ifdef CONFIG_ZTEMT_CHARGE
+	DBG_BMS("last_good_ocv_raw= 0x%x, last_good_ocv_uv= %duV\n",
+			raw->last_good_ocv_raw, raw->last_good_ocv_uv);
+	DBG_BMS("cc_raw= 0x%llx\n", raw->cc);
+ #else
 	pr_debug("last_good_ocv_raw= 0x%x, last_good_ocv_uv= %duV\n",
 			raw->last_good_ocv_raw, raw->last_good_ocv_uv);
 	pr_debug("cc_raw= 0x%llx\n", raw->cc);
+	#endif
 	return 0;
 
 param_err:
@@ -1598,30 +1619,52 @@ static void calculate_soc_params(struct qpnp_bms_chip *chip,
 	int soc_rbatt, shdw_cc_uah;
 
 	calculate_delta_time(&chip->tm_sec, &params->delta_time_s);
+	#ifdef CONFIG_ZTEMT_CHARGE
+		pr_info("tm_sec = %ld, delta_s = %d\n",
+		chip->tm_sec, params->delta_time_s);
+	#else
 	pr_debug("tm_sec = %ld, delta_s = %d\n",
 		chip->tm_sec, params->delta_time_s);
+	#endif
 	params->fcc_uah = calculate_fcc(chip, batt_temp);
+		#ifdef CONFIG_ZTEMT_CHARGE
+		DBG_BMS("FCC = %uuAh batt_temp = %d\n", params->fcc_uah, batt_temp);
+		#else
 	pr_debug("FCC = %uuAh batt_temp = %d\n", params->fcc_uah, batt_temp);
-
+   #endif
 	/* calculate remainging charge */
 	params->ocv_charge_uah = calculate_ocv_charge(
 						chip, raw,
 						params->fcc_uah);
+ 	#ifdef CONFIG_ZTEMT_CHARGE
+  DBG_BMS("ocv_charge_uah = %uuAh\n", params->ocv_charge_uah);
+ 	#else
 	pr_debug("ocv_charge_uah = %uuAh\n", params->ocv_charge_uah);
-
+	#endif
 	/* calculate cc micro_volt_hour */
 	params->cc_uah = calculate_cc(chip, raw->cc, CC, RESET);
 	shdw_cc_uah = calculate_cc(chip, raw->shdw_cc, SHDW_CC, RESET);
+
+	#ifdef CONFIG_ZTEMT_CHARGE
+		DBG_BMS("cc_uah = %duAh raw->cc = %llx, shdw_cc_uah = %duAh raw->shdw_cc = %llx\n",
+			params->cc_uah, raw->cc,
+			shdw_cc_uah, raw->shdw_cc);
+ #else
 	pr_debug("cc_uah = %duAh raw->cc = %llx, shdw_cc_uah = %duAh raw->shdw_cc = %llx\n",
 			params->cc_uah, raw->cc,
 			shdw_cc_uah, raw->shdw_cc);
-
+	#endif
 	soc_rbatt = ((params->ocv_charge_uah - params->cc_uah) * 100)
 							/ params->fcc_uah;
 	if (soc_rbatt < 0)
 		soc_rbatt = 0;
 	params->rbatt_mohm = get_rbatt(chip, soc_rbatt, batt_temp);
+
+	#ifdef CONFIG_ZTEMT_CHARGE
+	DBG_BMS("rbatt_mohm = %d\n", params->rbatt_mohm);
+ #else
 	pr_debug("rbatt_mohm = %d\n", params->rbatt_mohm);
+ #endif
 
 	if (params->rbatt_mohm != chip->rbatt_mohm) {
 		chip->rbatt_mohm = params->rbatt_mohm;
@@ -1634,7 +1677,11 @@ static void calculate_soc_params(struct qpnp_bms_chip *chip,
 
 	params->uuc_uah = calculate_unusable_charge_uah(chip, params,
 							batt_temp);
+		#ifdef CONFIG_ZTEMT_CHARGE
+	DBG_BMS("UUC = %uuAh\n", params->uuc_uah);
+		#else
 	pr_debug("UUC = %uuAh\n", params->uuc_uah);
+		#endif
 }
 
 static int bound_soc(int soc)
@@ -1909,9 +1956,15 @@ static int report_cc_based_soc(struct qpnp_bms_chip *chip)
 	if (chip->last_soc != soc && !chip->last_soc_unbound)
 		chip->last_soc_change_sec = last_change_sec;
 
+#ifdef CONFIG_ZTEMT_CHARGE
+	DBG_BMS("last_soc = %d, calculated_soc = %d, soc = %d, time since last change = %d\n",
+			chip->last_soc, chip->calculated_soc,
+			soc, time_since_last_change_sec);
+#else
 	pr_debug("last_soc = %d, calculated_soc = %d, soc = %d, time since last change = %d\n",
 			chip->last_soc, chip->calculated_soc,
 			soc, time_since_last_change_sec);
+#endif
 	chip->last_soc = bound_soc(soc);
 	backup_soc_and_iavg(chip, batt_temp, chip->last_soc);
 	pr_debug("Reported SOC = %d\n", chip->last_soc);
@@ -2215,11 +2268,17 @@ skip_limits:
 	soc = soc_new;
 
 out:
+#ifdef CONFIG_ZTEMT_CHARGE
+	DBG_BMS("ibat_ua = %d, vbat_uv = %d, ocv_est_uv = %d, pc_est = %d, soc_est = %d, n = %d, delta_ocv_uv = %d, last_ocv_uv = %d, pc_new = %d, soc_new = %d, rbatt = %d, slope = %d\n",
+		ibat_ua, vbat_uv, ocv_est_uv, pc_est,
+		soc_est, n, delta_ocv_uv, chip->last_ocv_uv,
+		pc_new, soc_new, params->rbatt_mohm, slope);
+	#else
 	pr_debug("ibat_ua = %d, vbat_uv = %d, ocv_est_uv = %d, pc_est = %d, soc_est = %d, n = %d, delta_ocv_uv = %d, last_ocv_uv = %d, pc_new = %d, soc_new = %d, rbatt = %d, slope = %d\n",
 		ibat_ua, vbat_uv, ocv_est_uv, pc_est,
 		soc_est, n, delta_ocv_uv, chip->last_ocv_uv,
 		pc_new, soc_new, params->rbatt_mohm, slope);
-
+#endif
 	return soc;
 }
 
@@ -2349,8 +2408,11 @@ static int calculate_raw_soc(struct qpnp_bms_chip *chip,
 	remaining_usable_charge_uah = params->ocv_charge_uah
 					- params->cc_uah
 					- params->uuc_uah;
+ #ifdef CONFIG_ZTEMT_CHARGE
+ 	DBG_BMS("RUC = %duAh\n", remaining_usable_charge_uah);
+	#else
 	pr_debug("RUC = %duAh\n", remaining_usable_charge_uah);
-
+  #endif
 	soc = DIV_ROUND_CLOSEST((remaining_usable_charge_uah * 100),
 				(params->fcc_uah - params->uuc_uah));
 
@@ -2476,7 +2538,11 @@ done_calculating:
 	mutex_lock(&chip->last_soc_mutex);
 	previous_soc = chip->calculated_soc;
 	chip->calculated_soc = new_calculated_soc;
+#ifdef CONFIG_ZTEMT_CHARGE
+		DBG_BMS("CC based calculated SOC = %d\n", chip->calculated_soc);
+	#else
 	pr_debug("CC based calculated SOC = %d\n", chip->calculated_soc);
+	#endif
 	if (chip->last_soc_invalid) {
 		chip->last_soc_invalid = false;
 		chip->last_soc = -EINVAL;
@@ -2493,7 +2559,7 @@ done_calculating:
 			&& !chip->first_time_calc_soc) {
 		chip->last_soc_unbound = true;
 		chip->last_soc_change_sec = chip->last_recalc_time;
-		pr_debug("last_soc unbound because elapsed time = %d\n",
+		pr_info("last_soc unbound because elapsed time = %d\n",
 				params.delta_time_s);
 	}
 	mutex_unlock(&chip->last_soc_mutex);
@@ -2623,6 +2689,7 @@ static int recalculate_soc(struct qpnp_bms_chip *chip)
 			batt_temp = (int)result.physical;
 
 			mutex_lock(&chip->last_ocv_uv_mutex);
+			/*Calculate Soc*/
 			read_soc_params_raw(chip, &raw, batt_temp);
 			soc = calculate_state_of_charge(chip, &raw, batt_temp);
 			mutex_unlock(&chip->last_ocv_uv_mutex);
@@ -3385,7 +3452,13 @@ static void battery_insertion_check(struct qpnp_bms_chip *chip)
 /* Returns capacity as a SoC percentage between 0 and 100 */
 static int get_prop_bms_capacity(struct qpnp_bms_chip *chip)
 {
+ #ifdef CONFIG_ZTEMT_CHARGE
+	int soc = report_state_of_charge(chip);
+	soc = bound_soc(soc);
+	return soc;
+#else
 	return report_state_of_charge(chip);
+#endif
 }
 
 static void qpnp_bms_external_power_changed(struct power_supply *psy)
@@ -3648,7 +3721,13 @@ static int set_battery_data(struct qpnp_bms_chip *chip)
 	if (chip->batt_type == BATT_DESAY) {
 		batt_data = &desay_5200_data;
 	} else if (chip->batt_type == BATT_PALLADIUM) {
+#ifdef CONFIG_ZTEMT_2400AMH_BATTERY
+		batt_data = &ztemt_2400mAh_data;
+#elif defined(CONFIG_ZTEMT_2000AMH_BATTERY)
+		batt_data = &ztemt_2000mAh_data;
+#else	
 		batt_data = &palladium_1500_data;
+#endif
 	} else if (chip->batt_type == BATT_OEM) {
 		batt_data = &oem_batt_data;
 	} else if (chip->batt_type == BATT_QRD_4V35_2000MAH) {
@@ -3663,6 +3742,9 @@ static int set_battery_data(struct qpnp_bms_chip *chip)
 			return battery_id;
 		}
 
+/*
+  CONFIG_ZTEMT_CHARGE
+*/
 		node = of_find_node_by_name(chip->spmi->dev.of_node,
 				"qcom,battery-data");
 		if (!node) {

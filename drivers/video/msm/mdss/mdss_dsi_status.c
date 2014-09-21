@@ -30,7 +30,11 @@
 #include "mdss_panel.h"
 #include "mdss_mdp.h"
 
+#ifdef CONFIG_ZTEMT_LCD_ESD_TE_CHECK
+#define STATUS_CHECK_INTERVAL 2000
+#else
 #define STATUS_CHECK_INTERVAL 5000
+#endif
 
 struct dsi_status_data {
 	struct notifier_block fb_notifier;
@@ -49,6 +53,9 @@ static uint32_t interval = STATUS_CHECK_INTERVAL;
  * command. If DSI controller fails to acknowledge the BTA command, it sends
  * the PANEL_ALIVE=0 status to HAL layer.
  */
+#ifdef CONFIG_ZTEMT_NE501_LCD
+extern int mipi_lcd_esd_command(struct mdss_dsi_ctrl_pdata *ctrl_pdata);
+#endif
 static void check_dsi_ctrl_status(struct work_struct *work)
 {
 	struct dsi_status_data *pdsi_status = NULL;
@@ -65,6 +72,12 @@ static void check_dsi_ctrl_status(struct work_struct *work)
 		return;
 	}
 
+  //patch + case1481899 mayu 3.27
+	if(!pdsi_status->mfd){
+	  pr_err("%s:mfd is NULL \n",__func__);
+	  return;
+	}
+  //patch - case1481899 mayu 3.27
 	pdata = dev_get_platdata(&pdsi_status->mfd->pdev->dev);
 	if (!pdata) {
 		pr_err("%s: Panel data not available\n", __func__);
@@ -79,6 +92,15 @@ static void check_dsi_ctrl_status(struct work_struct *work)
 		return;
 	}
 
+//+++duguowei,crash if no lcd
+	if(ctrl_pdata->panel_name == NULL || !strcmp("",ctrl_pdata->panel_name)){
+		fb_unregister_client(&pstatus_data->fb_notifier);
+		cancel_delayed_work_sync(&pstatus_data->check_status);
+		kfree(pstatus_data);
+		pr_debug("%s: DSI ctrl status work queue removed\n", __func__);
+		return;
+	}
+//---duguowei,crash if no lcd
 	mdp5_data = mfd_to_mdp5_data(pdsi_status->mfd);
 	ctl = mfd_to_ctl(pdsi_status->mfd);
 
@@ -123,6 +145,18 @@ static void check_dsi_ctrl_status(struct work_struct *work)
 			schedule_delayed_work(&pdsi_status->check_status,
 				msecs_to_jiffies(pdsi_status->check_interval));
 		} else {
+#ifdef CONFIG_ZTEMT_NE501_LCD
+			if (mipi_lcd_esd_command(ctrl_pdata)) {
+				char *envp[2] = {"PANEL_ALIVE=0", NULL};
+				pdata->panel_info.panel_dead = true;
+				ret = kobject_uevent_env(
+					&pdsi_status->mfd->fbi->dev->kobj,
+								KOBJ_CHANGE, envp);
+				pr_err("%s: Panel has gone bad, sending uevent - %s\n",
+								__func__, envp[0]);
+				printk("default reset panel\n");
+			}
+#else
 			char *envp[2] = {"PANEL_ALIVE=0", NULL};
 			pdata->panel_info.panel_dead = true;
 			ret = kobject_uevent_env(
@@ -130,6 +164,7 @@ static void check_dsi_ctrl_status(struct work_struct *work)
 							KOBJ_CHANGE, envp);
 			pr_err("%s: Panel has gone bad, sending uevent - %s\n",
 							__func__, envp[0]);
+#endif
 		}
 	}
 }
@@ -151,10 +186,13 @@ static int fb_event_callback(struct notifier_block *self,
 	struct fb_event *evdata = data;
 	struct dsi_status_data *pdata = container_of(self,
 				struct dsi_status_data, fb_notifier);
-	pdata->mfd = evdata->info->par;
+  //patch move down case1481899 mayu 3.27
+	//pdata->mfd = evdata->info->par;
 
 	if (event == FB_EVENT_BLANK && evdata) {
 		int *blank = evdata->data;
+ //patch move down case1481899 mayu 3.27
+	pdata->mfd = evdata->info->par;
 		switch (*blank) {
 		case FB_BLANK_UNBLANK:
 			schedule_delayed_work(&pdata->check_status,
